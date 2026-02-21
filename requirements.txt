@@ -5,3 +5,8 @@ numpy>=1.24.0
 plotly>=5.18.0
 requests>=2.31.0
 lxml>=4.9.0
+# Pin urllib3 to avoid the method_whitelist → allowed_methods rename breaking pytrends.
+# urllib3 1.26.x uses allowed_methods; pytrends still passes method_whitelist.
+# The monkey-patch in app.py (_build_pytrends) makes this moot, but pinning
+# here is belt-and-suspenders for Streamlit Cloud's resolver.
+urllib3>=1.26.0,<2.0.0

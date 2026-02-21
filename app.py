@@ -177,18 +177,44 @@ def generate_demo_data(period_label: str, seed_offset: int = 0) -> tuple[pd.Data
     return region_df, time_df
 
 
+def _build_pytrends() -> "TrendReq":
+    """
+    Build a TrendReq that works with urllib3 >= 1.26.
+
+    Root cause: pytrends passes `method_whitelist` to urllib3.Retry, but that
+    kwarg was renamed to `allowed_methods` in urllib3 1.26, causing:
+        TypeError: Retry.__init__() got an unexpected keyword argument 'method_whitelist'
+
+    Fix: instantiate TrendReq with retries=0 (so pytrends never calls Retry),
+    then swap in a clean requests.Session with a standard HTTPAdapter.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+    from pytrends.request import TrendReq
+
+    pt = TrendReq(hl="en-US", tz=330, timeout=(10, 30), retries=0, backoff_factor=0)
+
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=3)   # plain int — no method_whitelist involved
+    session.mount("https://", adapter)
+    session.mount("http://",  adapter)
+    session.headers.update(pt.requests_session.headers)
+    pt.requests_session = session
+    return pt
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_live_data(period_label: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch real data from Google Trends via pytrends."""
     try:
-        from pytrends.request import TrendReq
         tf = TIME_PERIODS[period_label]
-        pt = TrendReq(hl="en-US", tz=330, timeout=(10, 30), retries=3, backoff_factor=0.8)
+        pt = _build_pytrends()
 
-        # Region data
+        # ── Region data ───────────────────────────────────────────────────
         pt.build_payload([KEYWORD], timeframe=tf, geo="IN")
-        region_raw = pt.interest_by_region(resolution="REGION", inc_low_vol=True, inc_geo_code=True)
-        region_raw = region_raw.reset_index()
+        region_raw = pt.interest_by_region(
+            resolution="REGION", inc_low_vol=True, inc_geo_code=True
+        ).reset_index()
 
         rows = []
         for state, geo in INDIAN_STATES.items():
@@ -205,19 +231,23 @@ def fetch_live_data(period_label: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         region_df = pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
 
-        # Time series
+        # ── Time series ───────────────────────────────────────────────────
         time.sleep(1.5)
         pt.build_payload([KEYWORD], timeframe=tf, geo="IN")
         ts_raw = pt.interest_over_time()
         if not ts_raw.empty and KEYWORD in ts_raw.columns:
-            time_df = ts_raw[[KEYWORD]].reset_index().rename(columns={"date": "Date", KEYWORD: "Interest"})
+            time_df = (
+                ts_raw[[KEYWORD]]
+                .reset_index()
+                .rename(columns={"date": "Date", KEYWORD: "Interest"})
+            )
         else:
             time_df = pd.DataFrame(columns=["Date", "Interest"])
 
         return region_df, time_df
 
     except Exception as e:
-        st.warning(f"⚠️ Google Trends API error: {e}. Falling back to demo data.")
+        st.warning(f"⚠️ Google Trends error: {e}  — showing demo data instead.", icon="⚠️")
         return generate_demo_data(period_label)
 
 
